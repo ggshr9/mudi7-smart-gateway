@@ -554,7 +554,7 @@ if [ -z "$HS" ] || [ "$HS" = "0" ] || [ $(($(date +%s) - HS)) -gt 180 ]; then
     problems="$problems WG-stale"
 fi
 
-pgrep -x mihomo >/dev/null || problems="$problems mihomo-dead"
+pidof mihomo >/dev/null || problems="$problems mihomo-dead"
 ip link show "$TUN_DEV" >/dev/null 2>&1 || problems="$problems ${TUN_DEV}-missing"
 netstat -tln 2>/dev/null | grep -q ":${DNS_PORT} " || problems="$problems dns-down"
 
