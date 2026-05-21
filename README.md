@@ -32,15 +32,14 @@ GL.iNet ships a usable router, but turning it into a smart proxy gateway in Chin
 git clone https://github.com/ggshr9/mudi7-smart-gateway.git
 cd mudi7-smart-gateway
 
-cp mudi.env.example mudi.env
-# edit mudi.env with your VPS host, IP, VLESS/HY2 credentials, etc.
+# Interactive wizard — prompts for VPS host, IP, VLESS/HY2 creds, etc.
+# Generates mudi.env (mode 600). Re-run anytime to edit (existing values
+# show as defaults). Or copy mudi.env.example and edit by hand if you prefer.
+./setup.sh
 
-# push to Mudi:
+# Push to Mudi:
 scp mudi.env provision-mudi.sh root@192.168.8.1:/tmp/
-ssh root@192.168.8.1
-cd /tmp
-set -a; . ./mudi.env; set +a
-./provision-mudi.sh
+ssh root@192.168.8.1 'cd /tmp && set -a && . ./mudi.env && set +a && ./provision-mudi.sh'
 ```
 
 After the script finishes:
