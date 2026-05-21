@@ -371,31 +371,28 @@ chmod 755 /etc/init.d/mihomo
 # Explicitly NOT enabling — by design
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 6.5: /etc/mudi-vpn.conf — single source of truth for hook + health check
-# Hook and health-check both source this so changes here propagate without
-# re-editing scripts. LAN_NET is derived from network.lan so it survives a
-# subnet change in GL Web UI (only /24 supported; adjust if you use something
-# weirder).
+# Phase 6.5: /etc/mudi-vpn.conf — fixed tunables for hook + health check.
+# Anything derived from live system state (e.g. LAN_NET) is NOT here — the
+# hook recomputes those at runtime so subnet changes via GL Web UI take
+# effect on the next VPN toggle without re-running this script.
 # ─────────────────────────────────────────────────────────────────────────────
 echo
 echo "========================================="
-echo "Phase 6.5: VPN config file (hook tunables)"
+echo "Phase 6.5: VPN config file (fixed tunables)"
 echo "========================================="
-LAN_IP=$(uci -q get network.lan.ipaddr || echo "192.168.8.1")
-LAN_NET=$(echo "$LAN_IP" | awk -F. '{printf "%s.%s.%s.0/24", $1, $2, $3}')
-
-cat > /etc/mudi-vpn.conf << CFG_EOF
+cat > /etc/mudi-vpn.conf << 'CFG_EOF'
 # Sourced by /etc/hotplug.d/iface/99-vpn-mode and /usr/local/bin/mudi-vpn-health.sh
-LAN_NET="${LAN_NET}"
+# LAN_NET is intentionally NOT here — hook computes it from network.lan.ipaddr
+# every time so changing the LAN subnet via GL Web UI doesn't break routing.
 WG_IFACE="wgclient1"
 TUN_DEV="utun"
 TUN_GW="198.18.0.2"        # mihomo fake-ip-range second IP (next-hop on utun)
 VPS_LAN="10.20.0.0/24"     # WG peer's LAN subnet
 LAN_RULE_PREF=6500
-DNS_PORT=1053               # mihomo DNS listen port
+DNS_PORT=1053              # mihomo DNS listen port
 CFG_EOF
 chmod 644 /etc/mudi-vpn.conf
-echo "wrote /etc/mudi-vpn.conf (LAN_NET=$LAN_NET)"
+echo "wrote /etc/mudi-vpn.conf (LAN_NET derived at hook runtime)"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 7: dnsmasq default upstream (Aliyun + DNSPod, used when VPN is OFF)
@@ -448,6 +445,12 @@ cat > /etc/hotplug.d/iface/99-vpn-mode << 'HOOK_EOF'
     logger -t vpn-mode "ERROR: /etc/mudi-vpn.conf missing; refusing to run"
     exit 1
 }
+
+# LAN subnet recomputed at runtime so GL Web UI subnet changes (e.g. moving
+# from 192.168.8.0/24 to 10.0.0.0/24) propagate without re-provisioning.
+# Only /24 LAN is supported here; adjust the awk if you use something weirder.
+LAN_IP=$(uci -q get network.lan.ipaddr || echo "192.168.8.1")
+LAN_NET=$(echo "$LAN_IP" | awk -F. '{printf "%s.%s.%s.0/24", $1, $2, $3}')
 
 # Only react to OUR WG interface
 [ "$INTERFACE" = "$WG_IFACE" ] || exit 0
