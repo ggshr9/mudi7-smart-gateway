@@ -4,3 +4,4 @@ mudi.env
 !mudi.env.example
 *.bak
 *.tmp
+.claude/

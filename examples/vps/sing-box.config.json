@@ -1,0 +1,57 @@
+{
+  "//": "Minimal sing-box server config: VLESS+REALITY (TCP) + Hysteria-2 (UDP).",
+  "//": "Match the inbound ports / UUIDs / passwords to the values in your mudi.env.",
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-reality-in",
+      "listen": "::",
+      "listen_port": 8443,
+      "users": [
+        {
+          "name": "primary",
+          "uuid": "REPLACE_WITH_VLESS_UUID",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "www.microsoft.com",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "www.microsoft.com",
+            "server_port": 443
+          },
+          "private_key": "REPLACE_WITH_REALITY_PRIVATE_KEY",
+          "short_id": ["REPLACE_WITH_REALITY_SHORT_ID"]
+        }
+      }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "hy2-in",
+      "listen": "::",
+      "listen_port": 443,
+      "users": [
+        {"name": "primary", "password": "REPLACE_WITH_HY2_PASSWORD"}
+      ],
+      "tls": {
+        "enabled": true,
+        "alpn": ["h3"],
+        "certificate_path": "/etc/letsencrypt/live/YOUR_VPS_DOMAIN/fullchain.pem",
+        "key_path": "/etc/letsencrypt/live/YOUR_VPS_DOMAIN/privkey.pem"
+      }
+    }
+  ],
+  "outbounds": [
+    {"type": "direct", "tag": "direct"}
+  ],
+  "route": {
+    "final": "direct"
+  }
+}

@@ -10,6 +10,36 @@ Bring-your-own-VPS smart proxy bootstrap for the **GL.iNet Mudi 7 (GL-E5800)** 5
 
 The provisioning is driven entirely by a hotplug hook reacting to `wgclient1` ifup/ifdown, so the physical screen switch on the router is the only user-visible control.
 
+## Data flow (VPN ON + Global)
+
+```mermaid
+flowchart LR
+    phone(["LAN device<br/>(phone / laptop)"])
+    dnsmasq["dnsmasq :53<br/>(GL DNAT → :2153)"]
+    mihomo["mihomo<br/>(fake-IP + rules)"]
+    utun{{"utun TUN<br/>198.18.0.0/16"}}
+    fw4["fw4 forward<br/>br-lan ↔ utun<br/>(ruleset-post)"]
+    cnbypass{"cn-bypass.nft<br/>iif br-lan + dst @cncidr_v4<br/>→ fwmark 0x80000"}
+    sim(["WAN<br/>(SIM / repeater)"])
+    vps(["VPS<br/>sing-box<br/>VLESS+REALITY · Hy2"])
+    web((Internet))
+
+    phone -- "(1) DNS query" --> dnsmasq
+    dnsmasq -- "(2) forward to 1053" --> mihomo
+    mihomo -- "(3) fake-IP 198.18.x.x" --> phone
+
+    phone -- "(4) SYN to fake-IP" --> cnbypass
+    cnbypass -- "CN dst:<br/>fwmark → main table" --> sim
+    cnbypass -- "non-CN" --> fw4
+    fw4 -- accept --> utun
+    utun --> mihomo
+    mihomo -- "outbound via VLESS-REALITY (TCP)<br/>or Hysteria-2 (UDP)" --> vps
+    vps --> web
+    web --> sim
+```
+
+The three orange-box layers (`cn-bypass.nft`, `fw4 forward`, `mihomo`) are exactly what the three "traps" in the next section fixed.
+
 ## Why a fresh repo for this
 
 GL.iNet ships a usable router, but turning it into a smart proxy gateway in China hits three traps that aren't documented anywhere I could find. Each of them cost hours, so this repo bakes the fixes in:
@@ -24,6 +54,7 @@ GL.iNet ships a usable router, but turning it into a smart proxy gateway in Chin
 - A VPS you control (any modern Linux box) running:
   - `sing-box` with VLESS+REALITY (TCP) and Hysteria-2 (UDP)
   - `wg-quick@wg0` on a random high UDP port (don't use 51820/51234!)
+  - See [examples/vps/](examples/vps/) for sanitized templates of these configs plus a step-by-step setup guide.
 - Outbound network from Mudi → VPS that isn't being actively interfered with on those ports.
 
 ## Usage
@@ -40,6 +71,18 @@ cd mudi7-smart-gateway
 # Push to Mudi:
 scp mudi.env provision-mudi.sh root@192.168.8.1:/tmp/
 ssh root@192.168.8.1 'cd /tmp && set -a && . ./mudi.env && set +a && ./provision-mudi.sh'
+```
+
+### Day-2 tooling
+
+```bash
+# Upgrade mihomo to latest (or pin a tag) without re-running provision:
+./update.sh                  # latest release
+./update.sh v1.19.24         # pinned
+
+# Snapshot full Mudi state into a tar.gz before any risky change / reset:
+ssh root@192.168.8.1 'mudi-snapshot.sh'             # contains secrets, mode 600
+ssh root@192.168.8.1 'mudi-snapshot.sh --redact'    # sharable, secrets stripped
 ```
 
 After the script finishes:
