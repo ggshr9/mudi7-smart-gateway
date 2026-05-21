@@ -102,8 +102,11 @@ API_SECRET_DEFAULT="${EXISTING[API_SECRET]:-$(gen_random_token)}"
 API_SECRET=$(ask API_SECRET "LAN-only API bearer (random suggested)" "$API_SECRET_DEFAULT")
 
 echo
-echo "── Headscale (optional, leave blank to skip Phase 9) ──"
-HEADSCALE_AUTHKEY=$(ask HEADSCALE_AUTHKEY "auth key from your Headscale" "" secret)
+echo "── Tailscale (optional, leave blank to skip Phase 9) ──"
+echo "  Get an official auth key at https://login.tailscale.com/admin/settings/keys"
+echo "  (or set TS_LOGIN_SERVER below to use self-hosted Headscale)"
+TS_AUTHKEY=$(ask TS_AUTHKEY "tskey-auth-... from Tailscale or Headscale" "" secret)
+TS_LOGIN_SERVER=$(ask TS_LOGIN_SERVER "control plane URL" "${EXISTING[TS_LOGIN_SERVER]:-https://login.tailscale.com}")
 
 # Write the file atomically.
 TMP_FILE=$(mktemp "${ENV_FILE}.XXXXXX")
@@ -126,7 +129,10 @@ trap 'rm -f "$TMP_FILE"' EXIT
     echo
     echo "API_SECRET=$API_SECRET"
     echo
-    [ -n "$HEADSCALE_AUTHKEY" ] && echo "HEADSCALE_AUTHKEY=$HEADSCALE_AUTHKEY"
+    if [ -n "$TS_AUTHKEY" ]; then
+        echo "TS_AUTHKEY=$TS_AUTHKEY"
+        echo "TS_LOGIN_SERVER=$TS_LOGIN_SERVER"
+    fi
 } > "$TMP_FILE"
 mv "$TMP_FILE" "$ENV_FILE"
 chmod 600 "$ENV_FILE"

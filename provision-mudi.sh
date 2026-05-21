@@ -25,9 +25,12 @@ set -e
 VPS_HOST="${VPS_HOST:?Set VPS_HOST (e.g. proxy.example.com)}"
 VPS_IP="${VPS_IP:?Set VPS_IP (your VPS public IPv4)}"
 
-# Headscale (optional self-hosted Tailscale control plane). Leave empty to skip.
-HEADSCALE_URL="${HEADSCALE_URL:-https://${VPS_HOST}:9443}"
-HEADSCALE_AUTHKEY="${HEADSCALE_AUTHKEY:-}"
+# Tailscale (optional). Defaults to the official control plane — set
+# TS_LOGIN_SERVER to your own Headscale URL to use self-hosted instead. The
+# tailscale daemon below is wired to use mihomo's HTTP proxy, so the official
+# login.tailscale.com is reachable from CN networks as long as VPN is ON.
+TS_LOGIN_SERVER="${TS_LOGIN_SERVER:-https://login.tailscale.com}"
+TS_AUTHKEY="${TS_AUTHKEY:-}"
 
 # VLESS+REALITY (primary proxy). Generate UUID/pubkey/shortid on the VPS with
 # `sing-box generate uuid` / `sing-box generate reality-keypair`.
@@ -699,14 +702,18 @@ SNAP_EOF
 chmod 755 /usr/local/bin/mudi-snapshot.sh
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 9: Tailscale → Headscale (optional, skipped if HEADSCALE_AUTHKEY unset)
+# Phase 9: Tailscale (optional, skipped if TS_AUTHKEY unset)
+# Defaults to the official Tailscale control plane. To use self-hosted
+# Headscale instead, set TS_LOGIN_SERVER=https://your-headscale-host:port
+# in mudi.env before running. The daemon is wired to use mihomo's HTTP proxy
+# so login.tailscale.com is reachable from CN networks (when VPN is ON).
 # ─────────────────────────────────────────────────────────────────────────────
 echo
 echo "========================================="
-echo "Phase 9: Tailscale → Headscale (optional)"
+echo "Phase 9: Tailscale (optional)"
 echo "========================================="
-if [ -z "${HEADSCALE_AUTHKEY}" ]; then
-    echo "HEADSCALE_AUTHKEY not set, skipping Tailscale/Headscale setup"
+if [ -z "${TS_AUTHKEY}" ]; then
+    echo "TS_AUTHKEY not set, skipping Tailscale setup"
 else
     TS_INIT=/etc/init.d/tailscale
     if [ -f "$TS_INIT" ] && ! grep -q "HTTPS_PROXY" "$TS_INIT"; then
@@ -721,12 +728,15 @@ else
     /etc/init.d/tailscale enable
     /etc/init.d/tailscale restart
     sleep 3
+    # --force-reauth is needed when switching between login servers
+    # (e.g. moving from Headscale back to official Tailscale).
     tailscale up \
-        --login-server="${HEADSCALE_URL}" \
-        --authkey="${HEADSCALE_AUTHKEY}" \
+        --reset \
+        --force-reauth \
+        --login-server="${TS_LOGIN_SERVER}" \
+        --authkey="${TS_AUTHKEY}" \
         --accept-routes \
-        --accept-dns=false \
-        --reset 2>&1 | head -3 || echo "(Tailscale login may need retry once mihomo is up)"
+        --accept-dns=false 2>&1 | head -3 || echo "(Tailscale login may need retry once mihomo is up)"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
