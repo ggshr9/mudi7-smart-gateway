@@ -371,6 +371,33 @@ chmod 755 /etc/init.d/mihomo
 # Explicitly NOT enabling — by design
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Phase 6.5: /etc/mudi-vpn.conf — single source of truth for hook + health check
+# Hook and health-check both source this so changes here propagate without
+# re-editing scripts. LAN_NET is derived from network.lan so it survives a
+# subnet change in GL Web UI (only /24 supported; adjust if you use something
+# weirder).
+# ─────────────────────────────────────────────────────────────────────────────
+echo
+echo "========================================="
+echo "Phase 6.5: VPN config file (hook tunables)"
+echo "========================================="
+LAN_IP=$(uci -q get network.lan.ipaddr || echo "192.168.8.1")
+LAN_NET=$(echo "$LAN_IP" | awk -F. '{printf "%s.%s.%s.0/24", $1, $2, $3}')
+
+cat > /etc/mudi-vpn.conf << CFG_EOF
+# Sourced by /etc/hotplug.d/iface/99-vpn-mode and /usr/local/bin/mudi-vpn-health.sh
+LAN_NET="${LAN_NET}"
+WG_IFACE="wgclient1"
+TUN_DEV="utun"
+TUN_GW="198.18.0.2"        # mihomo fake-ip-range second IP (next-hop on utun)
+VPS_LAN="10.20.0.0/24"     # WG peer's LAN subnet
+LAN_RULE_PREF=6500
+DNS_PORT=1053               # mihomo DNS listen port
+CFG_EOF
+chmod 644 /etc/mudi-vpn.conf
+echo "wrote /etc/mudi-vpn.conf (LAN_NET=$LAN_NET)"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Phase 7: dnsmasq default upstream (Aliyun + DNSPod, used when VPN is OFF)
 # ─────────────────────────────────────────────────────────────────────────────
 echo
@@ -406,21 +433,24 @@ echo "========================================="
 cat > /etc/hotplug.d/iface/99-vpn-mode << 'HOOK_EOF'
 #!/bin/sh
 # Three-state machine reactor (GL.iNet Mudi 7 + mihomo)
+# All tunables in /etc/mudi-vpn.conf — edit there and re-trigger this hook to apply.
 # - ifup + Global Mode (wireguard.global.global_proxy=1):
-#     1. Kill any stray mihomo (clean slate)
-#     2. Start mihomo via procd
-#     3. Wait for utun + port 1053 listening
-#     4. Override table 1001 (default→utun, 10.20.0.0/24→wgclient)
-#     5. Add source-based ip rule (LAN → table 1001)
-#     6. Remove GL blackhole rules
-#     7. Switch dnsmasq to mihomo with strict_order
+#     1. Kill stray mihomo, start via procd, wait for utun + DNS port
+#     2. Bail if utun never appears (no point continuing)
+#     3. Override table 1001 (default→utun, VPS LAN→wgclient)
+#     4. Add source-based ip rule (LAN → table 1001)
+#     5. Remove GL blackhole rules
+#     6. Switch dnsmasq to mihomo with strict-order
 # - ifup + Policy Mode → no-op (reserved for UU)
 # - ifdown → stop mihomo, remove rule, restore dnsmasq
 
-case "$INTERFACE" in wgclient*) ;; *) exit 0 ;; esac
+. /etc/mudi-vpn.conf 2>/dev/null || {
+    logger -t vpn-mode "ERROR: /etc/mudi-vpn.conf missing; refusing to run"
+    exit 1
+}
 
-LAN_NET="192.168.8.0/24"
-LAN_RULE_PREF=6500
+# Only react to OUR WG interface
+[ "$INTERFACE" = "$WG_IFACE" ] || exit 0
 
 case "$ACTION" in
     ifup)
@@ -436,43 +466,52 @@ case "$ACTION" in
         /etc/init.d/mihomo start
 
         for i in 1 2 3 4 5 6 7 8 9 10; do
-            ip link show utun >/dev/null 2>&1 && break
+            ip link show "$TUN_DEV" >/dev/null 2>&1 && break
             sleep 1
         done
         for i in 1 2 3 4 5 6 7 8 9 10; do
-            netstat -tln 2>/dev/null | grep -q ":1053 " && break
+            netstat -tln 2>/dev/null | grep -q ":${DNS_PORT} " && break
             sleep 1
         done
 
-        ip route flush table 1001 2>/dev/null
-        ip route add 10.20.0.0/24 dev "$INTERFACE" table 1001 2>/dev/null
-        ip route add default via 198.18.0.2 dev utun table 1001
+        if ! ip link show "$TUN_DEV" >/dev/null 2>&1; then
+            logger -t vpn-mode "ERROR: $TUN_DEV never appeared, aborting hook"
+            exit 1
+        fi
 
-        ip rule del from "$LAN_NET" lookup 1001 pref $LAN_RULE_PREF 2>/dev/null
-        ip rule add from "$LAN_NET" lookup 1001 pref $LAN_RULE_PREF
+        ip route flush table 1001 2>/dev/null
+        ip route add "$VPS_LAN" dev "$INTERFACE" table 1001 2>/dev/null
+        ip route add default via "$TUN_GW" dev "$TUN_DEV" table 1001 || {
+            logger -t vpn-mode "ERROR: failed to add default via $TUN_GW dev $TUN_DEV"
+            exit 1
+        }
+
+        ip rule del from "$LAN_NET" lookup 1001 pref "$LAN_RULE_PREF" 2>/dev/null
+        ip rule add from "$LAN_NET" lookup 1001 pref "$LAN_RULE_PREF"
 
         ip rule del iif br-lan blackhole pref 9920 2>/dev/null
         ip rule del pref 9910 2>/dev/null
 
         uci -q delete dhcp.@dnsmasq[0].server 2>/dev/null
-        uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#1053"
+        uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#${DNS_PORT}"
         uci add_list dhcp.@dnsmasq[0].server="223.5.5.5"
-        uci set dhcp.@dnsmasq[0].strict_order="1"
+        uci set dhcp.@dnsmasq[0].strictorder="1"
         uci commit dhcp
         /etc/init.d/dnsmasq restart
 
-        UTUN_OK=$(ip link show utun >/dev/null 2>&1 && echo Y || echo N)
-        P1053=$(netstat -tln 2>/dev/null | grep -c ":1053 ")
-        logger -t vpn-mode "OK: utun=$UTUN_OK, 1053-listeners=$P1053, table1001-default=$(ip route show table 1001 | grep -c default)"
+        UTUN_OK=$(ip link show "$TUN_DEV" >/dev/null 2>&1 && echo Y || echo N)
+        PDNS=$(netstat -tln 2>/dev/null | grep -c ":${DNS_PORT} ")
+        logger -t vpn-mode "OK: ${TUN_DEV}=${UTUN_OK}, ${DNS_PORT}-listeners=${PDNS}, t1001-default=$(ip route show table 1001 | grep -c default)"
         ;;
 
     ifdown)
         logger -t vpn-mode "WG $INTERFACE down — stopping mihomo"
         /etc/init.d/mihomo stop 2>/dev/null
         pkill -9 mihomo 2>/dev/null
-        ip rule del from "$LAN_NET" lookup 1001 pref $LAN_RULE_PREF 2>/dev/null
+        ip rule del from "$LAN_NET" lookup 1001 pref "$LAN_RULE_PREF" 2>/dev/null
         uci -q delete dhcp.@dnsmasq[0].server 2>/dev/null
-        uci -q delete dhcp.@dnsmasq[0].strict_order 2>/dev/null
+        uci -q delete dhcp.@dnsmasq[0].strictorder 2>/dev/null
+        uci -q delete dhcp.@dnsmasq[0].strict_order 2>/dev/null  # legacy key cleanup
         uci add_list dhcp.@dnsmasq[0].server="223.5.5.5"
         uci add_list dhcp.@dnsmasq[0].server="119.29.29.29"
         uci commit dhcp
@@ -482,6 +521,57 @@ case "$ACTION" in
 esac
 HOOK_EOF
 chmod 755 /etc/hotplug.d/iface/99-vpn-mode
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 8.5: VPN health check (cron every 5 min, recovers from mihomo crash /
+# stale WG handshake / dropped forward rule). Only acts when VPN is supposed
+# to be ON in Global Mode — silently no-ops in VPN OFF / Policy Mode.
+# ─────────────────────────────────────────────────────────────────────────────
+echo
+echo "========================================="
+echo "Phase 8.5: VPN health check + recovery"
+echo "========================================="
+cat > /usr/local/bin/mudi-vpn-health.sh << 'HEALTH_EOF'
+#!/bin/sh
+. /etc/mudi-vpn.conf 2>/dev/null || exit 0
+
+# Don't act if user has VPN OFF or in Policy Mode
+GLOBAL=$(uci -q get wireguard.global.global_proxy)
+WG_DISABLED=$(uci -q get "network.${WG_IFACE}.disabled")
+[ "$GLOBAL" != "1" ] && exit 0
+[ "$WG_DISABLED" = "1" ] && exit 0
+
+problems=""
+
+# WG handshake within last 3 min
+HS=$(wg show "$WG_IFACE" latest-handshakes 2>/dev/null | awk '{print $2}')
+if [ -z "$HS" ] || [ "$HS" = "0" ] || [ $(($(date +%s) - HS)) -gt 180 ]; then
+    problems="$problems WG-stale"
+fi
+
+pgrep -x mihomo >/dev/null || problems="$problems mihomo-dead"
+ip link show "$TUN_DEV" >/dev/null 2>&1 || problems="$problems ${TUN_DEV}-missing"
+netstat -tln 2>/dev/null | grep -q ":${DNS_PORT} " || problems="$problems dns-down"
+
+# fw4 forward rule still in place (utun accept rules)
+nft list chain inet fw4 forward 2>/dev/null | grep -q "oifname \"$TUN_DEV\"" \
+    || problems="$problems fw-rule-missing"
+
+if [ -z "$problems" ]; then
+    exit 0   # healthy, stay quiet
+fi
+
+logger -t mudi-health "DEGRADED: ${problems# } → re-triggering hook ifup"
+INTERFACE="$WG_IFACE" ACTION=ifup /etc/hotplug.d/iface/99-vpn-mode
+HEALTH_EOF
+chmod 755 /usr/local/bin/mudi-vpn-health.sh
+
+# Cron entry — every 5 min
+grep -q mudi-vpn-health /etc/crontabs/root 2>/dev/null || {
+    echo "*/5 * * * * /usr/local/bin/mudi-vpn-health.sh" >> /etc/crontabs/root
+    /etc/init.d/cron restart
+    echo "installed mudi-vpn-health cron (every 5 min)"
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 9: Tailscale → Headscale (optional, skipped if HEADSCALE_AUTHKEY unset)

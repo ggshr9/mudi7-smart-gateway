@@ -76,6 +76,53 @@ After the script finishes:
 - The `mudi.env` file — that's where your secrets live. It's gitignored.
 - Snapshots of pre-reset state used during development. Also gitignored.
 
+## Troubleshooting
+
+The provisioning installs a 5-minute health check (`/usr/local/bin/mudi-vpn-health.sh`) that watches for mihomo crashes, stale WG handshakes, missing TUN device, and dropped fw4 rules — and re-triggers the hook to recover. Most transient breakage self-heals within 5 minutes. Watch it with:
+
+```bash
+logread -e mudi-health | tail
+```
+
+If you're debugging a deeper problem, three checks pinpoint where things broke:
+
+**1. Is WireGuard up?**
+
+```bash
+wg show wgclient1
+```
+
+- `latest handshake: X seconds ago` < 180s → tunnel healthy.
+- `Unable to access interface: No such device` → screen toggle is OFF, or `ifup wgclient1` failed.
+- Handshake stale > 3 min → carrier CGNAT timed out the mapping; the health check will re-up the interface.
+
+**2. Is mihomo running and is the FORWARD chain in place?**
+
+```bash
+pgrep -x mihomo && echo alive || echo dead
+ip link show utun 2>&1 | head -1
+nft -a list chain inet fw4 forward | head -6
+```
+
+The forward chain MUST have both `iifname "br-lan" oifname "utun" accept` and the reverse at the head — without them, LAN devices get TCP RST. If missing, `fw4 reload` reapplies them from `/usr/share/nftables.d/ruleset-post/utun-forward.nft`.
+
+**3. Is DNS returning fake-IPs (198.18.x.x)?**
+
+```bash
+nslookup google.com 127.0.0.1
+```
+
+Expected: `Address: 198.18.0.X`. If a real Google IP comes back, the wgclient1 dnsmasq (port 2153) lost its mihomo upstream — check `uci show dhcp.wgclient1.server`.
+
+**Manually re-run the state-machine hook** (idempotent — safe to invoke any time):
+
+```bash
+INTERFACE=wgclient1 ACTION=ifup /etc/hotplug.d/iface/99-vpn-mode
+logread -e vpn-mode | tail
+```
+
+**Tunables** live in `/etc/mudi-vpn.conf` (LAN_NET, TUN_GW, ports, etc.). Edit there and re-trigger the hook to apply — no need to re-run the whole provision script.
+
 ## Caveats / known limits
 
 - Only tested on the **GL-E5800 / Mudi 7** running GL.iNet OpenWrt 23.05 with the Quectel SDK. Other GL hardware uses different fw4/ip-rule layouts and the FORWARD chain fix may need adjustment.
