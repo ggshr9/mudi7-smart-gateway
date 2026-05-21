@@ -1,0 +1,6 @@
+snapshot-pre-reset/
+mudi.env
+*.env
+!mudi.env.example
+*.bak
+*.tmp
