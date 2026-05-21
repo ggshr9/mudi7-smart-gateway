@@ -210,7 +210,9 @@ proxy-groups:
     proxies:
       - vless-reality
       - hysteria-2
-    url: "http://www.gstatic.com/generate_204"
+    # HTTPS, not HTTP — gstatic redirects http→https and mihomo's url-test
+    # treats redirects as failures, causing spurious PROXY-failed flapping.
+    url: "https://www.gstatic.com/generate_204"
     interval: 60
     tolerance: 50
 
@@ -575,6 +577,126 @@ grep -q mudi-vpn-health /etc/crontabs/root 2>/dev/null || {
     /etc/init.d/cron restart
     echo "installed mudi-vpn-health cron (every 5 min)"
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 8.6: mudi-snapshot — bundle current state into a tar.gz for backup.
+# Use before risky changes / factory reset. Output is mode 600 because it
+# contains secrets (WG private key, mihomo API token, VLESS UUID, etc.);
+# pass --redact to strip them for a sharable diagnostic bundle.
+# ─────────────────────────────────────────────────────────────────────────────
+echo
+echo "========================================="
+echo "Phase 8.6: snapshot tool"
+echo "========================================="
+cat > /usr/local/bin/mudi-snapshot.sh << 'SNAP_EOF'
+#!/bin/sh
+# Usage:
+#   mudi-snapshot.sh                       → full snapshot (contains secrets)
+#   mudi-snapshot.sh --redact              → strip secrets, safe to share
+#   mudi-snapshot.sh /path/to/file.tar.gz  → custom output path
+set -u
+
+REDACT=""
+OUT=""
+for arg in "$@"; do
+    case "$arg" in
+        --redact) REDACT=1 ;;
+        --help|-h)
+            echo "Usage: $0 [--redact] [output.tar.gz]"
+            exit 0
+            ;;
+        *) OUT="$arg" ;;
+    esac
+done
+
+STAMP=$(date +%Y%m%d-%H%M%S)
+SUFFIX=""
+[ -n "$REDACT" ] && SUFFIX="-redacted"
+OUT="${OUT:-/tmp/mudi-snapshot-${STAMP}${SUFFIX}.tar.gz}"
+
+WORK=$(mktemp -d)
+trap "rm -rf $WORK" EXIT
+cd "$WORK"
+mkdir state etc nftables runtime logs
+
+# --- Metadata ---
+{
+    echo "snapshot-time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "hostname: $(uname -n)"
+    echo "kernel: $(uname -r)"
+    grep -E "DISTRIB_(ID|RELEASE|REVISION)" /etc/openwrt_release 2>/dev/null
+    echo "mihomo: $(/usrdata/proxy/bin/mihomo -v 2>/dev/null | head -1)"
+    echo "redacted: ${REDACT:-no}"
+} > state/info.txt
+
+# --- Persistent config ---
+uci export    > etc/uci-export.txt 2>/dev/null
+uci show      > etc/uci-show.txt   2>/dev/null
+cp /etc/mudi-vpn.conf                    etc/                  2>/dev/null
+cp /etc/hotplug.d/iface/99-vpn-mode      etc/                  2>/dev/null
+cp /etc/init.d/mihomo                    etc/init.d-mihomo     2>/dev/null
+cp /etc/crontabs/root                    etc/crontabs-root     2>/dev/null
+cp /usrdata/proxy/etc/config.yaml        etc/mihomo-config.yaml 2>/dev/null
+cp /etc/hosts                            etc/                  2>/dev/null
+cp /usr/local/bin/mudi-vpn-health.sh     etc/                  2>/dev/null
+cp /usr/local/bin/update-cn-cidr.sh      etc/                  2>/dev/null
+
+# --- nftables persistent rules ---
+cp -r /usr/share/nftables.d/ruleset-post nftables/post 2>/dev/null
+
+# --- Live runtime state ---
+ip rule show                                          > runtime/ip-rule.txt 2>&1
+ip route show table all                               > runtime/ip-route-all.txt 2>&1
+ip -4 addr show                                       > runtime/ip-addr.txt 2>&1
+ip link show                                          > runtime/ip-link.txt 2>&1
+nft list ruleset                                      > runtime/nft-ruleset.txt 2>&1
+wg show all                                           > runtime/wg-show.txt 2>&1
+ps w                                                  > runtime/ps.txt 2>&1
+netstat -tlnp                                         > runtime/netstat-tcp.txt 2>&1
+netstat -ulnp                                         > runtime/netstat-udp.txt 2>&1
+cat /proc/net/nf_conntrack 2>/dev/null | head -200    > runtime/conntrack-head200.txt 2>&1
+iw dev wlan1 station dump                             > runtime/iw-stations.txt 2>&1
+iw dev wlan4 link                                     > runtime/iw-upstream.txt 2>&1
+cat /tmp/dhcp.leases                                  > runtime/dhcp-leases.txt 2>&1
+
+# --- Recent logs ---
+logread -e vpn-mode    > logs/vpn-mode.log 2>&1
+logread -e mudi-health > logs/mudi-health.log 2>&1
+logread -e mihomo      > logs/mihomo.log 2>&1
+logread | tail -200    > logs/syslog-tail.log 2>&1
+
+# --- Redact secrets if requested ---
+if [ -n "$REDACT" ]; then
+    # WG private keys (UCI + /etc/wireguard if any)
+    sed -i "s/private_key='[^']*'/private_key='<REDACTED>'/g; s/PrivateKey *= *[^[:space:]]*/PrivateKey = <REDACTED>/g" \
+        etc/uci-export.txt etc/uci-show.txt 2>/dev/null
+
+    # mihomo config: UUID, PubKey, ShortID, password, API secret
+    sed -i "s/uuid: *.*/uuid: <REDACTED>/g; s/public-key: *.*/public-key: <REDACTED>/g; s/short-id: *.*/short-id: <REDACTED>/g; s/password: *.*/password: <REDACTED>/g; s/secret: *.*/secret: <REDACTED>/g" \
+        etc/mihomo-config.yaml 2>/dev/null
+
+    # Bearer token in init.d/mihomo
+    sed -i "s/Bearer [^\"\\']*/Bearer <REDACTED>/g" etc/init.d-mihomo 2>/dev/null
+
+    # MAC addresses in logs / station dumps (privacy)
+    sed -i -E "s/([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}/<MAC>/g" \
+        runtime/iw-stations.txt runtime/dhcp-leases.txt 2>/dev/null
+fi
+
+tar czf "$OUT" -C "$WORK" .
+chmod 600 "$OUT"
+
+SIZE=$(du -h "$OUT" 2>/dev/null | awk '{print $1}')
+echo "snapshot: $OUT ($SIZE)"
+if [ -z "$REDACT" ]; then
+    echo "  ⚠  contains secrets — DO NOT share. Re-run with --redact for a"
+    echo "     sharable version (UUIDs/keys/MACs stripped)."
+fi
+echo
+echo "to download:"
+echo "  scp root@\$(uci get network.lan.ipaddr 2>/dev/null || echo 192.168.8.1):$OUT ./"
+SNAP_EOF
+chmod 755 /usr/local/bin/mudi-snapshot.sh
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 9: Tailscale → Headscale (optional, skipped if HEADSCALE_AUTHKEY unset)
