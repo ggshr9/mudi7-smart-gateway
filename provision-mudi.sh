@@ -34,7 +34,7 @@ TS_AUTHKEY="${TS_AUTHKEY:-}"
 
 # VLESS+REALITY (primary proxy). Generate UUID/pubkey/shortid on the VPS with
 # `sing-box generate uuid` / `sing-box generate reality-keypair`.
-VLESS_PORT="${VLESS_PORT:-8443}"
+VLESS_PORT="${VLESS_PORT:-443}"
 VLESS_UUID="${VLESS_UUID:?Set VLESS_UUID (uuid from sing-box generate uuid)}"
 VLESS_PUBKEY="${VLESS_PUBKEY:?Set VLESS_PUBKEY (Reality public key from VPS)}"
 VLESS_SHORTID="${VLESS_SHORTID:?Set VLESS_SHORTID (Reality short ID)}"
