@@ -544,8 +544,10 @@ HOOK_EOF
 chmod 755 /etc/hotplug.d/iface/99-vpn-mode
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 8.5: VPN health check (cron every 5 min, recovers from mihomo crash /
-# stale WG handshake / dropped forward rule). Only acts when VPN is supposed
+# Phase 8.5: VPN health check (cron every 5 min, recovers from mihomo crash,
+# missing utun, silent DNS port, or dropped forward rule). WG handshake
+# staleness is logged as info but does NOT trigger recovery — WG is the
+# user-intent signal here, not a data path. Only acts when VPN is supposed
 # to be ON in Global Mode — silently no-ops in VPN OFF / Policy Mode.
 # ─────────────────────────────────────────────────────────────────────────────
 echo
