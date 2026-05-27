@@ -469,9 +469,13 @@ case "$ACTION" in
         fi
         logger -t vpn-mode "WG $INTERFACE up (Global Mode) — preparing mihomo"
 
-        pkill -9 mihomo 2>/dev/null
-        sleep 1
-        /etc/init.d/mihomo start
+        if pidof mihomo >/dev/null && ip link show "$TUN_DEV" >/dev/null 2>&1; then
+            logger -t vpn-mode "mihomo healthy (pid+utun), skipping restart"
+        else
+            pkill -9 mihomo 2>/dev/null
+            sleep 1
+            /etc/init.d/mihomo start
+        fi
 
         for i in 1 2 3 4 5 6 7 8 9 10; do
             ip link show "$TUN_DEV" >/dev/null 2>&1 && break
