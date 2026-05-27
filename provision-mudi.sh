@@ -500,6 +500,8 @@ case "$ACTION" in
                 logger -t vpn-mode "ERROR: failed to add default via $TUN_GW dev $TUN_DEV"
                 exit 1
             }
+        else
+            logger -t vpn-mode "table 1001 default already correct, skipping rebuild"
         fi
 
         ip rule del from "$LAN_NET" lookup 1001 pref "$LAN_RULE_PREF" 2>/dev/null
