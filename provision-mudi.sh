@@ -469,7 +469,7 @@ case "$ACTION" in
             logger -t vpn-mode "WG $INTERFACE up (Policy Mode) — mihomo stays off"
             exit 0
         fi
-        logger -t vpn-mode "WG $INTERFACE up (Global Mode) — preparing mihomo"
+        logger -t vpn-mode "WG $INTERFACE up (Global Mode, LAN=$LAN_NET) — preparing mihomo"
 
         if pidof mihomo >/dev/null && ip link show "$TUN_DEV" >/dev/null 2>&1; then
             logger -t vpn-mode "mihomo healthy (pid+utun), skipping restart"
@@ -506,7 +506,13 @@ case "$ACTION" in
             logger -t vpn-mode "table 1001 default already correct, skipping rebuild"
         fi
 
-        ip rule del from "$LAN_NET" lookup 1001 pref "$LAN_RULE_PREF" 2>/dev/null
+        # Remove any stale LAN→1001 rules from a previous (possibly different) LAN_NET,
+        # then add the freshly-computed one. Catches the case where GL Web UI changed
+        # the LAN subnet — the simple del-by-current-LAN_NET would leave the old rule.
+        OLD_LAN=$(ip rule show | awk -v pref="$LAN_RULE_PREF" '$1 == pref":" && $2 == "from" {print $3}' | head -1)
+        if [ -n "$OLD_LAN" ]; then
+            ip rule del from "$OLD_LAN" lookup 1001 pref "$LAN_RULE_PREF" 2>/dev/null
+        fi
         ip rule add from "$LAN_NET" lookup 1001 pref "$LAN_RULE_PREF"
 
         ip rule del iif br-lan blackhole pref 9920 2>/dev/null
@@ -526,14 +532,18 @@ case "$ACTION" in
 
         UTUN_OK=$(ip link show "$TUN_DEV" >/dev/null 2>&1 && echo Y || echo N)
         PDNS=$(netstat -tln 2>/dev/null | grep -c ":${DNS_PORT} ")
-        logger -t vpn-mode "OK: ${TUN_DEV}=${UTUN_OK}, ${DNS_PORT}-listeners=${PDNS}, t1001-default=$(ip route show table 1001 | grep -c default)"
+        logger -t vpn-mode "OK: LAN=$LAN_NET, ${TUN_DEV}=${UTUN_OK}, ${DNS_PORT}-listeners=${PDNS}, t1001-default=$(ip route show table 1001 | grep -c default)"
         ;;
 
     ifdown)
         logger -t vpn-mode "WG $INTERFACE down — stopping mihomo"
         /etc/init.d/mihomo stop 2>/dev/null
         pkill -9 mihomo 2>/dev/null
-        ip rule del from "$LAN_NET" lookup 1001 pref "$LAN_RULE_PREF" 2>/dev/null
+        # Cleanup: remove whatever LAN→1001 rule is currently at our pref.
+        OLD_LAN=$(ip rule show | awk -v pref="$LAN_RULE_PREF" '$1 == pref":" && $2 == "from" {print $3}' | head -1)
+        if [ -n "$OLD_LAN" ]; then
+            ip rule del from "$OLD_LAN" lookup 1001 pref "$LAN_RULE_PREF" 2>/dev/null
+        fi
         uci -q delete dhcp.@dnsmasq[0].server 2>/dev/null
         uci -q delete dhcp.@dnsmasq[0].strictorder 2>/dev/null
         uci -q delete dhcp.@dnsmasq[0].strict_order 2>/dev/null  # legacy key cleanup
