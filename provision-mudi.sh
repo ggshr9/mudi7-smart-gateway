@@ -511,7 +511,7 @@ case "$ACTION" in
         ip rule del pref 9910 2>/dev/null
 
         WANT_SERVER="127.0.0.1#${DNS_PORT}"
-        if ! uci -q show dhcp 2>/dev/null | grep -qF "server='${WANT_SERVER}'"; then
+        if ! uci -q show dhcp 2>/dev/null | grep -qF "dhcp.@dnsmasq[0].server='${WANT_SERVER}'"; then
             uci -q delete dhcp.@dnsmasq[0].server 2>/dev/null
             uci add_list dhcp.@dnsmasq[0].server="${WANT_SERVER}"
             uci add_list dhcp.@dnsmasq[0].server="223.5.5.5"
