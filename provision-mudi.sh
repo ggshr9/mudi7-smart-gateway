@@ -536,7 +536,16 @@ case "$ACTION" in
         ;;
 
     ifdown)
-        logger -t vpn-mode "WG $INTERFACE down — stopping mihomo"
+        # Intent guard: GL's wgclient handler fires ifdown on WG REKEY-GIVEUP
+        # (network-layer flap) as well as on user-driven VPN OFF toggles. Only
+        # the latter should tear down mihomo. Distinguish by reading the user
+        # intent UCI value — if it's still 1, this ifdown is a flap, not intent.
+        GLOBAL=$(uci -q get wireguard.global.global_proxy 2>/dev/null)
+        if [ "$GLOBAL" = "1" ]; then
+            logger -t vpn-mode "WG $INTERFACE down but intent=ON (WG flap) — preserving mihomo state"
+            exit 0
+        fi
+        logger -t vpn-mode "WG $INTERFACE down (intent=OFF) — stopping mihomo"
         /etc/init.d/mihomo stop 2>/dev/null
         pkill -9 mihomo 2>/dev/null
         # Cleanup: remove whatever LAN→1001 rule is currently at our pref.
