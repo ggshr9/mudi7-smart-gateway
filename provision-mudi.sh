@@ -437,12 +437,14 @@ cat > /etc/hotplug.d/iface/99-vpn-mode << 'HOOK_EOF'
 # Three-state machine reactor (GL.iNet Mudi 7 + mihomo)
 # All tunables in /etc/mudi-vpn.conf — edit there and re-trigger this hook to apply.
 # - ifup + Global Mode (wireguard.global.global_proxy=1):
-#     1. Kill stray mihomo, start via procd, wait for utun + DNS port
+#     Each step below is idempotent: it only mutates state that doesn't
+#     already match desired. Safe to re-run from the cron health check.
+#     1. If mihomo not healthy (no pid OR no utun): restart via procd, wait
 #     2. Bail if utun never appears (no point continuing)
-#     3. Override table 1001 (default→utun, VPS LAN→wgclient)
+#     3. If table 1001 default route wrong: flush and rebuild
 #     4. Add source-based ip rule (LAN → table 1001)
 #     5. Remove GL blackhole rules
-#     6. Switch dnsmasq to mihomo with strict-order
+#     6. If dnsmasq upstream wrong: rewrite + restart
 # - ifup + Policy Mode → no-op (reserved for UU)
 # - ifdown → stop mihomo, remove rule, restore dnsmasq
 
@@ -518,6 +520,8 @@ case "$ACTION" in
             uci set dhcp.@dnsmasq[0].strictorder="1"
             uci commit dhcp
             /etc/init.d/dnsmasq restart
+        else
+            logger -t vpn-mode "dnsmasq upstream already correct, skipping restart"
         fi
 
         UTUN_OK=$(ip link show "$TUN_DEV" >/dev/null 2>&1 && echo Y || echo N)
