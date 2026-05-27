@@ -446,7 +446,8 @@ cat > /etc/hotplug.d/iface/99-vpn-mode << 'HOOK_EOF'
 #     5. Remove GL blackhole rules
 #     6. If dnsmasq upstream wrong: rewrite + restart
 # - ifup + Policy Mode → no-op (reserved for UU)
-# - ifdown → stop mihomo, remove rule, restore dnsmasq
+# - ifdown + intent=ON (WG flap) → no-op, preserve mihomo state
+# - ifdown + intent=OFF (user toggle) → stop mihomo, remove rule, restore dnsmasq
 
 . /etc/mudi-vpn.conf 2>/dev/null || {
     logger -t vpn-mode "ERROR: /etc/mudi-vpn.conf missing; refusing to run"
