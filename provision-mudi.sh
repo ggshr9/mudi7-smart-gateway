@@ -494,10 +494,13 @@ case "$ACTION" in
             exit 1
         fi
 
-        WANT_DEFAULT="default via $TUN_GW dev $TUN_DEV"
-        CUR_DEFAULT=$(ip route show table 1001 2>/dev/null | grep "^default" || true)
+        # Both checks use grep -c counts. String-comparing $(ip route show)
+        # output is unreliable: iproute2 emits a trailing space after "dev utun"
+        # that command substitution does not strip, so a string == compare would
+        # always mismatch and falsely trigger rebuild every ifup.
+        HAS_DEFAULT=$(ip route show table 1001 2>/dev/null | grep -c "^default via $TUN_GW dev $TUN_DEV")
         HAS_VPS_LAN=$(ip route show table 1001 2>/dev/null | grep -c "^$VPS_LAN ")
-        if [ "$CUR_DEFAULT" != "$WANT_DEFAULT" ] || [ "$HAS_VPS_LAN" = "0" ]; then
+        if [ "$HAS_DEFAULT" = "0" ] || [ "$HAS_VPS_LAN" = "0" ]; then
             ip route flush table 1001 2>/dev/null
             ip route add "$VPS_LAN" dev "$INTERFACE" table 1001 2>/dev/null
             ip route add default via "$TUN_GW" dev "$TUN_DEV" table 1001 || {
