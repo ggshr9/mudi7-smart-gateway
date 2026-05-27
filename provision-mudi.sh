@@ -510,12 +510,15 @@ case "$ACTION" in
         ip rule del iif br-lan blackhole pref 9920 2>/dev/null
         ip rule del pref 9910 2>/dev/null
 
-        uci -q delete dhcp.@dnsmasq[0].server 2>/dev/null
-        uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#${DNS_PORT}"
-        uci add_list dhcp.@dnsmasq[0].server="223.5.5.5"
-        uci set dhcp.@dnsmasq[0].strictorder="1"
-        uci commit dhcp
-        /etc/init.d/dnsmasq restart
+        WANT_SERVER="127.0.0.1#${DNS_PORT}"
+        if ! uci -q show dhcp 2>/dev/null | grep -qF "server='${WANT_SERVER}'"; then
+            uci -q delete dhcp.@dnsmasq[0].server 2>/dev/null
+            uci add_list dhcp.@dnsmasq[0].server="${WANT_SERVER}"
+            uci add_list dhcp.@dnsmasq[0].server="223.5.5.5"
+            uci set dhcp.@dnsmasq[0].strictorder="1"
+            uci commit dhcp
+            /etc/init.d/dnsmasq restart
+        fi
 
         UTUN_OK=$(ip link show "$TUN_DEV" >/dev/null 2>&1 && echo Y || echo N)
         PDNS=$(netstat -tln 2>/dev/null | grep -c ":${DNS_PORT} ")
