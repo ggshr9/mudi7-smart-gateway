@@ -562,25 +562,22 @@ WG_DISABLED=$(uci -q get "network.${WG_IFACE}.disabled")
 [ "$GLOBAL" != "1" ] && exit 0
 [ "$WG_DISABLED" = "1" ] && exit 0
 
-problems=""
-
-# WG handshake within last 3 min
+# WG handshake — informational only; WG is signal-only in this setup,
+# proxy traffic does not flow through it, so a stale handshake is not a
+# reason to bounce mihomo or re-run convergence.
 HS=$(wg show "$WG_IFACE" latest-handshakes 2>/dev/null | awk '{print $2}')
 if [ -z "$HS" ] || [ "$HS" = "0" ] || [ $(($(date +%s) - HS)) -gt 180 ]; then
-    problems="$problems WG-stale"
+    logger -t mudi-health "INFO: WG handshake stale (signal-only, not acting)"
 fi
 
+problems=""
 pidof mihomo >/dev/null || problems="$problems mihomo-dead"
 ip link show "$TUN_DEV" >/dev/null 2>&1 || problems="$problems ${TUN_DEV}-missing"
 netstat -tln 2>/dev/null | grep -q ":${DNS_PORT} " || problems="$problems dns-down"
-
-# fw4 forward rule still in place (utun accept rules)
 nft list chain inet fw4 forward 2>/dev/null | grep -q "oifname \"$TUN_DEV\"" \
     || problems="$problems fw-rule-missing"
 
-if [ -z "$problems" ]; then
-    exit 0   # healthy, stay quiet
-fi
+[ -z "$problems" ] && exit 0
 
 logger -t mudi-health "DEGRADED: ${problems# } → re-triggering hook ifup"
 INTERFACE="$WG_IFACE" ACTION=ifup /etc/hotplug.d/iface/99-vpn-mode
