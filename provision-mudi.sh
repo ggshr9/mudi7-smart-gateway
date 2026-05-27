@@ -496,7 +496,8 @@ case "$ACTION" in
 
         WANT_DEFAULT="default via $TUN_GW dev $TUN_DEV"
         CUR_DEFAULT=$(ip route show table 1001 2>/dev/null | grep "^default" || true)
-        if [ "$CUR_DEFAULT" != "$WANT_DEFAULT" ]; then
+        HAS_VPS_LAN=$(ip route show table 1001 2>/dev/null | grep -c "^$VPS_LAN ")
+        if [ "$CUR_DEFAULT" != "$WANT_DEFAULT" ] || [ "$HAS_VPS_LAN" = "0" ]; then
             ip route flush table 1001 2>/dev/null
             ip route add "$VPS_LAN" dev "$INTERFACE" table 1001 2>/dev/null
             ip route add default via "$TUN_GW" dev "$TUN_DEV" table 1001 || {
@@ -504,7 +505,7 @@ case "$ACTION" in
                 exit 1
             }
         else
-            logger -t vpn-mode "table 1001 default already correct, skipping rebuild"
+            logger -t vpn-mode "table 1001 default+VPS_LAN already correct, skipping rebuild"
         fi
 
         # Remove any stale LAN→1001 rules from a previous (possibly different) LAN_NET,
