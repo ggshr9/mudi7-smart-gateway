@@ -491,12 +491,16 @@ case "$ACTION" in
             exit 1
         fi
 
-        ip route flush table 1001 2>/dev/null
-        ip route add "$VPS_LAN" dev "$INTERFACE" table 1001 2>/dev/null
-        ip route add default via "$TUN_GW" dev "$TUN_DEV" table 1001 || {
-            logger -t vpn-mode "ERROR: failed to add default via $TUN_GW dev $TUN_DEV"
-            exit 1
-        }
+        WANT_DEFAULT="default via $TUN_GW dev $TUN_DEV"
+        CUR_DEFAULT=$(ip route show table 1001 2>/dev/null | grep "^default" || true)
+        if [ "$CUR_DEFAULT" != "$WANT_DEFAULT" ]; then
+            ip route flush table 1001 2>/dev/null
+            ip route add "$VPS_LAN" dev "$INTERFACE" table 1001 2>/dev/null
+            ip route add default via "$TUN_GW" dev "$TUN_DEV" table 1001 || {
+                logger -t vpn-mode "ERROR: failed to add default via $TUN_GW dev $TUN_DEV"
+                exit 1
+            }
+        fi
 
         ip rule del from "$LAN_NET" lookup 1001 pref "$LAN_RULE_PREF" 2>/dev/null
         ip rule add from "$LAN_NET" lookup 1001 pref "$LAN_RULE_PREF"
