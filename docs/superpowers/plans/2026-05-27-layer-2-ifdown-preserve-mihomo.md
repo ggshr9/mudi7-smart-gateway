@@ -233,8 +233,13 @@ Expected: `SYNTAX_OK`.
 
 - [ ] **Step 3: Install with backup**
 
+CRITICAL: backup MUST go outside `/etc/hotplug.d/iface/` because OpenWrt's
+hotplug.d framework executes every executable file in that directory. A
+`.bak` file with mode 755 (which `cp` preserves) becomes a second hook
+that runs on every event — silently rolling back this change every flap.
+
 ```bash
-SSHPASS='Nategu325416' sshpass -e ssh root@192.168.8.1 'cp /etc/hotplug.d/iface/99-vpn-mode /etc/hotplug.d/iface/99-vpn-mode.bak.$(date +%Y%m%d-%H%M%S) && cp /tmp/99-vpn-mode.new /etc/hotplug.d/iface/99-vpn-mode && chmod 755 /etc/hotplug.d/iface/99-vpn-mode && rm /tmp/99-vpn-mode.new && md5sum /etc/hotplug.d/iface/99-vpn-mode'
+SSHPASS='Nategu325416' sshpass -e ssh root@192.168.8.1 'mkdir -p /root/mudi-hook-backups && cp /etc/hotplug.d/iface/99-vpn-mode /root/mudi-hook-backups/99-vpn-mode.bak.$(date +%Y%m%d-%H%M%S) && cp /tmp/99-vpn-mode.new /etc/hotplug.d/iface/99-vpn-mode && chmod 755 /etc/hotplug.d/iface/99-vpn-mode && rm /tmp/99-vpn-mode.new && md5sum /etc/hotplug.d/iface/99-vpn-mode'
 ```
 
 Then locally:
