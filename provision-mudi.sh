@@ -535,6 +535,24 @@ case "$ACTION" in
             logger -t vpn-mode "dnsmasq upstream already correct, skipping restart"
         fi
 
+        # wgclient1 dnsmasq self-heal: GL DNATs LAN DNS queries marked 0x1000
+        # to port 2153 (the dnsmasq instance under dhcp.wgclient1). If its
+        # upstream drifts from mihomo back to public DNS (default 223.5.5.5
+        # /119.29.29.29), fake-IP breaks and foreign domains leak. Phase 7 of
+        # this script sets it correctly at provision time; this guard heals it
+        # in case GL ever re-applies its defaults.
+        if uci -q get dhcp.wgclient1 >/dev/null; then
+            if ! uci -q show dhcp 2>/dev/null | grep -qF "dhcp.wgclient1.server='${WANT_SERVER}'"; then
+                uci -q delete dhcp.wgclient1.server 2>/dev/null
+                uci add_list dhcp.wgclient1.server="${WANT_SERVER}"
+                uci add_list dhcp.wgclient1.server="223.5.5.5"
+                uci set dhcp.wgclient1.strictorder="1"
+                uci commit dhcp
+                /etc/init.d/dnsmasq restart
+                logger -t vpn-mode "wgclient1 dnsmasq drifted, reset to mihomo"
+            fi
+        fi
+
         UTUN_OK=$(ip link show "$TUN_DEV" >/dev/null 2>&1 && echo Y || echo N)
         PDNS=$(netstat -tln 2>/dev/null | grep -c ":${DNS_PORT} ")
         logger -t vpn-mode "OK: LAN=$LAN_NET, ${TUN_DEV}=${UTUN_OK}, ${DNS_PORT}-listeners=${PDNS}, t1001-default=$(ip route show table 1001 | grep -c default)"
