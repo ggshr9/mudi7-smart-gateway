@@ -3,10 +3,9 @@
 #
 # Design (revised 2026-05-20 after debugging GL VPN framework conflicts):
 #
-#   State machine:
-#     VPN OFF              → mihomo NOT running, dnsmasq → Aliyun DNS, pure direct
-#     VPN ON + Global Mode → mihomo running, dnsmasq → mihomo, smart split routing
-#     VPN ON + Policy Mode → mihomo NOT running (reserved for UU later)
+#   State machine (Layer 3 — intent driven by network.wgclient1.disabled only):
+#     WG disabled (disabled=1) → mihomo NOT running, dnsmasq → Aliyun DNS, pure direct
+#     WG enabled  (disabled=0) → mihomo running, dnsmasq → mihomo, smart split routing
 #
 #   Critical principle: don't touch GL's VPN policy framework structurally.
 #   Just react to its events via hotplug hook + a minimal table 1001 override.
@@ -107,7 +106,7 @@ echo "========================================="
 cat > /usrdata/proxy/etc/config.yaml << EOF
 ###############################################################
 # Mihomo (Clash.Meta) — GL.iNet Mudi 7 — provisioned v2
-# Architecture: only runs when VPN ON + Global Mode (started by hotplug hook)
+# Architecture: only runs when WG interface enabled (started by hotplug hook)
 ###############################################################
 
 geo-auto-update: false
@@ -347,7 +346,7 @@ echo "========================================="
 cat > /etc/init.d/mihomo << 'INIT_EOF'
 #!/bin/sh /etc/rc.common
 # mihomo procd service. Started ONLY by /etc/hotplug.d/iface/99-vpn-mode hook
-# when VPN ON + Global Mode is active. Do NOT enable for boot — by design.
+# when WG interface is enabled. Do NOT enable for boot — by design.
 START=95
 STOP=15
 USE_PROCD=1
@@ -436,7 +435,7 @@ cat > /etc/hotplug.d/iface/99-vpn-mode << 'HOOK_EOF'
 #!/bin/sh
 # Three-state machine reactor (GL.iNet Mudi 7 + mihomo)
 # All tunables in /etc/mudi-vpn.conf — edit there and re-trigger this hook to apply.
-# - ifup + Global Mode (wireguard.global.global_proxy=1):
+# - ifup (WG interface coming up — user has it enabled):
 #     Each step below is idempotent: it only mutates state that doesn't
 #     already match desired. Safe to re-run from the cron health check.
 #     1. If mihomo not healthy (no pid OR no utun): restart via procd, wait
@@ -445,9 +444,9 @@ cat > /etc/hotplug.d/iface/99-vpn-mode << 'HOOK_EOF'
 #     4. Add source-based ip rule (LAN → table 1001)
 #     5. Remove GL blackhole rules
 #     6. If dnsmasq upstream wrong: rewrite + restart
-# - ifup + Policy Mode → no-op (reserved for UU)
-# - ifdown + intent=ON (WG flap) → no-op, preserve mihomo state
-# - ifdown + intent=OFF (user toggle) → stop mihomo, remove rule, restore dnsmasq
+#     7. Self-heal wgclient1 dnsmasq if drifted from mihomo
+# - ifdown + interface enabled (WG flap) → no-op, preserve mihomo state
+# - ifdown + interface disabled (user toggle) → stop mihomo, remove rule, restore dnsmasq
 
 . /etc/mudi-vpn.conf 2>/dev/null || {
     logger -t vpn-mode "ERROR: /etc/mudi-vpn.conf missing; refusing to run"
@@ -465,12 +464,7 @@ LAN_NET=$(echo "$LAN_IP" | awk -F. '{printf "%s.%s.%s.0/24", $1, $2, $3}')
 
 case "$ACTION" in
     ifup)
-        GLOBAL=$(uci -q get wireguard.global.global_proxy 2>/dev/null)
-        if [ "$GLOBAL" != "1" ]; then
-            logger -t vpn-mode "WG $INTERFACE up (Policy Mode) — mihomo stays off"
-            exit 0
-        fi
-        logger -t vpn-mode "WG $INTERFACE up (Global Mode, LAN=$LAN_NET) — preparing mihomo"
+        logger -t vpn-mode "WG $INTERFACE up (LAN=$LAN_NET) — preparing mihomo"
 
         if pidof mihomo >/dev/null && ip link show "$TUN_DEV" >/dev/null 2>&1; then
             logger -t vpn-mode "mihomo healthy (pid+utun), skipping restart"
@@ -560,15 +554,16 @@ case "$ACTION" in
 
     ifdown)
         # Intent guard: GL's wgclient handler fires ifdown on WG REKEY-GIVEUP
-        # (network-layer flap) as well as on user-driven VPN OFF toggles. Only
-        # the latter should tear down mihomo. Distinguish by reading the user
-        # intent UCI value — if it's still 1, this ifdown is a flap, not intent.
-        GLOBAL=$(uci -q get wireguard.global.global_proxy 2>/dev/null)
-        if [ "$GLOBAL" = "1" ]; then
-            logger -t vpn-mode "WG $INTERFACE down but intent=ON (WG flap) — preserving mihomo state"
+        # (network-layer flap) as well as on user-driven VPN OFF toggles
+        # (which set network.wgclient1.disabled=1). Distinguish by reading
+        # the UCI disabled flag — if it is NOT 1, this ifdown is a flap and
+        # mihomo should keep running.
+        WG_DISABLED=$(uci -q get "network.${WG_IFACE}.disabled" 2>/dev/null)
+        if [ "$WG_DISABLED" != "1" ]; then
+            logger -t vpn-mode "WG $INTERFACE down but interface enabled (WG flap) — preserving mihomo state"
             exit 0
         fi
-        logger -t vpn-mode "WG $INTERFACE down (intent=OFF) — stopping mihomo"
+        logger -t vpn-mode "WG $INTERFACE down (interface disabled) — stopping mihomo"
         /etc/init.d/mihomo stop 2>/dev/null
         pkill -9 mihomo 2>/dev/null
         # Cleanup: remove whatever LAN→1001 rule is currently at our pref.
@@ -593,8 +588,8 @@ chmod 755 /etc/hotplug.d/iface/99-vpn-mode
 # Phase 8.5: VPN health check (cron every 5 min, recovers from mihomo crash,
 # missing utun, silent DNS port, or dropped forward rule). WG handshake
 # staleness is logged as info but does NOT trigger recovery — WG is the
-# user-intent signal here, not a data path. Only acts when VPN is supposed
-# to be ON in Global Mode — silently no-ops in VPN OFF / Policy Mode.
+# user-intent signal here, not a data path. Only acts when the WG interface
+# is enabled (disabled=0) — silently no-ops when user has disabled it.
 # ─────────────────────────────────────────────────────────────────────────────
 echo
 echo "========================================="
@@ -604,10 +599,8 @@ cat > /usr/local/bin/mudi-vpn-health.sh << 'HEALTH_EOF'
 #!/bin/sh
 . /etc/mudi-vpn.conf 2>/dev/null || exit 0
 
-# Don't act if user has VPN OFF or in Policy Mode
-GLOBAL=$(uci -q get wireguard.global.global_proxy)
-WG_DISABLED=$(uci -q get "network.${WG_IFACE}.disabled")
-[ "$GLOBAL" != "1" ] && exit 0
+# Don't act if user has WG interface disabled
+WG_DISABLED=$(uci -q get "network.${WG_IFACE}.disabled" 2>/dev/null)
 [ "$WG_DISABLED" = "1" ] && exit 0
 
 # WG handshake — informational only; WG is signal-only in this setup,
@@ -805,10 +798,9 @@ echo "========================================="
 echo "PROVISIONING COMPLETE"
 echo "========================================="
 echo
-echo "State machine ready:"
-echo "  VPN OFF              → pure direct routing (mihomo not running)"
-echo "  VPN ON + Global Mode → mihomo handles foreign, cn-bypass keeps CN direct"
-echo "  VPN ON + Policy Mode → reserved (UU game accel goes here)"
+echo "State machine ready (Layer 3 — intent = !network.wgclient1.disabled):"
+echo "  WG disabled → pure direct routing (mihomo not running)"
+echo "  WG enabled  → mihomo handles foreign, cn-bypass keeps CN direct"
 echo
 echo "Next manual steps:"
 echo "  1. In GL Web UI (http://192.168.8.1), navigate VPN → WireGuard Client"
