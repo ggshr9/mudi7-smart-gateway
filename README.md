@@ -127,6 +127,20 @@ The provisioning installs a 5-minute health check (`/usr/local/bin/mudi-vpn-heal
 logread -e mudi-health | tail
 ```
 
+**"I flipped the VPN switch and nothing happens."** WireGuard here is only the
+*intent signal* — the actual proxy egresses over VLESS-REALITY (TCP/443) +
+Hysteria-2 (UDP/443), which don't need the WG tunnel. On networks that block WG's
+UDP handshake (corporate WiFi, strict firewalls), GL only ever fires
+`ifdown`/`REKEY-GIVEUP` for `wgclient1`, never a clean `ifup`. The hook handles
+this: its `ifdown` branch converges via `ACTION=ifup` whenever intent is ON
+(`network.wgclient1.disabled=0`) but mihomo isn't running, so toggling ON brings
+the proxy up within seconds regardless of WG. Confirm with
+`logread -e vpn-mode | tail` — you want a `converging via ifup` or `OK: LAN=…`
+line. WG itself may keep flapping in the background; that's harmless. (Testing
+gotcha: a client whose own default route is a separate VPN won't use the Mudi at
+all — test from a device whose gateway is the Mudi, or via `curl -x
+http://192.168.8.1:7890`.)
+
 If you're debugging a deeper problem, three checks pinpoint where things broke:
 
 **1. Is WireGuard up?**
