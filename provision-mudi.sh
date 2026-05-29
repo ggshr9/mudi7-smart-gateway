@@ -445,7 +445,7 @@ cat > /etc/hotplug.d/iface/99-vpn-mode << 'HOOK_EOF'
 #     5. Remove GL blackhole rules
 #     6. If dnsmasq upstream wrong: rewrite + restart
 #     7. Self-heal wgclient1 dnsmasq if drifted from mihomo
-# - ifdown + interface enabled (WG flap) → no-op, preserve mihomo state
+# - ifdown + interface enabled (WG flap): preserve if mihomo healthy, else converge via ifup
 # - ifdown + interface disabled (user toggle) → stop mihomo, remove rule, restore dnsmasq
 
 . /etc/mudi-vpn.conf 2>/dev/null || {
@@ -560,8 +560,19 @@ case "$ACTION" in
         # mihomo should keep running.
         WG_DISABLED=$(uci -q get "network.${WG_IFACE}.disabled" 2>/dev/null)
         if [ "$WG_DISABLED" != "1" ]; then
-            logger -t vpn-mode "WG $INTERFACE down but interface enabled (WG flap) — preserving mihomo state"
-            exit 0
+            # Intent is still ON. If mihomo is already healthy this is just a WG
+            # flap — preserve. If mihomo is NOT up (e.g. a network where WG never
+            # handshakes, so the ifup branch never fired), converge now via the
+            # ifup path so the toggle takes effect in seconds instead of waiting
+            # for the 5-min health check. ACTION=ifup runs only the ifup branch,
+            # so there is no recursion back into ifdown.
+            if pidof mihomo >/dev/null && ip link show "$TUN_DEV" >/dev/null 2>&1; then
+                logger -t vpn-mode "WG $INTERFACE down but interface enabled (WG flap) — mihomo healthy, preserving"
+                exit 0
+            fi
+            logger -t vpn-mode "WG $INTERFACE down, intent ON but mihomo not up — converging via ifup"
+            INTERFACE="$WG_IFACE" ACTION=ifup "$0"
+            exit $?
         fi
         logger -t vpn-mode "WG $INTERFACE down (interface disabled) — stopping mihomo"
         /etc/init.d/mihomo stop 2>/dev/null
